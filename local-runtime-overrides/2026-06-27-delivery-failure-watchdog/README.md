@@ -17,6 +17,8 @@ point.
   - No-agent cron watchdog for recent Feishu delivery failures.
   - Reads only log tails, keeps a small local state file, and stays silent when
     there are no new unresolved delivery failures.
+  - Keeps acknowledged event keys after successful watchdog delivery so old
+    timestamp-less log lines do not re-enter pending on later scans.
 - `cron/jobs.restore.json`
   - Restore metadata for the IT health check and delivery-failure watchdog cron
     jobs.

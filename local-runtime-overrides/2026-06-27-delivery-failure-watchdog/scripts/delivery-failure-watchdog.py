@@ -30,6 +30,7 @@ MAX_TAIL_BYTES = 256 * 1024
 LOOKBACK_HOURS = 24
 REPEAT_INTERVAL_SECONDS = 60 * 60
 MAX_PENDING = 50
+MAX_ACKNOWLEDGED = 200
 
 LOGS = [
     LOG_DIR / "agent.log",
@@ -178,17 +179,23 @@ def main() -> int:
         item["key"]: item for item in state.get("pending", []) if isinstance(item, dict) and item.get("key")
     }
     last_emit_keys = set(state.get("last_emit_keys") or [])
+    acknowledged_keys = set(state.get("acknowledged_keys") or [])
 
     if last_emit_keys and not own_error:
         for key in last_emit_keys:
             pending.pop(key, None)
+        acknowledged_keys.update(last_emit_keys)
         last_emit_keys = set()
 
     for event in collect_events():
+        if event["key"] in acknowledged_keys:
+            continue
         pending.setdefault(event["key"], event)
 
     if len(pending) > MAX_PENDING:
         pending = dict(sorted(pending.items(), key=lambda item: (item[1].get("ts") or "", item[0]))[-MAX_PENDING:])
+    if len(acknowledged_keys) > MAX_ACKNOWLEDGED:
+        acknowledged_keys = set(sorted(acknowledged_keys)[-MAX_ACKNOWLEDGED:])
 
     pending_events = sorted(pending.values(), key=lambda item: (item.get("ts") or "", item["key"]))
     now = time.time()
@@ -200,6 +207,7 @@ def main() -> int:
         "updated_at": now,
         "pending": pending_events,
         "known_pending_keys": sorted(pending),
+        "acknowledged_keys": sorted(acknowledged_keys),
         "last_emit_keys": sorted(last_emit_keys),
         "last_emit_at": last_emit_at,
     }
