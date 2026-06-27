@@ -1,0 +1,30 @@
+{
+  "jobs": [
+    {
+      "id": "53297e7f6b29",
+      "name": "IT 健康检查",
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 1,5,8-22/2,23 * * *",
+        "display": "0 1,5,8-22/2,23 * * *"
+      },
+      "script": "hermes-it-health-check.py",
+      "no_agent": true,
+      "deliver": "feishu:oc_9d0e9de0b11f95bffd339cdc1539c6c0",
+      "enabled": true
+    },
+    {
+      "id": "affe5c1a9f0c",
+      "name": "delivery-failure-watchdog",
+      "schedule": {
+        "kind": "interval",
+        "minutes": 15,
+        "display": "every 15m"
+      },
+      "script": "delivery-failure-watchdog.py",
+      "no_agent": true,
+      "deliver": "feishu:oc_35b18c7ff42867517ebc3eb176b29c21",
+      "enabled": true
+    }
+  ]
+}
