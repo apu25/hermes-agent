@@ -30,7 +30,7 @@ MAX_TAIL_BYTES = 256 * 1024
 LOOKBACK_HOURS = 24
 REPEAT_INTERVAL_SECONDS = 60 * 60
 MAX_PENDING = 50
-MAX_ACKNOWLEDGED = 200
+MAX_ACKNOWLEDGED = 2000
 
 LOGS = [
     LOG_DIR / "agent.log",
@@ -41,7 +41,6 @@ LOGS = [
 PATTERNS = [
     ("cron_delivery_error", re.compile(r"cron\.scheduler: Job '([^']+)': delivery error: (.+)", re.I)),
     ("feishu_send_error", re.compile(r"\[Feishu\] Send error: (.+)", re.I)),
-    ("feishu_send_retry", re.compile(r"\[Feishu\] Send attempt \d+/\d+ failed for chat ([^;]+); retrying .*: (.+)", re.I)),
     ("unconfirmed_live_send", re.compile(r"live adapter send to ([^ ]+) returned unconfirmed result .*error=(.+?)\), falling back", re.I)),
     ("shutdown_notify_failed", re.compile(r"Failed to send shutdown notification to ([^:]+):([^:]+): (.+)", re.I)),
 ]
