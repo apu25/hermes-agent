@@ -188,6 +188,7 @@ import {
   sandboxFallbackFromEnv,
   sandboxPreflight
 } from './update-relaunch'
+import { buildUpdateCheckEnv, hasProxyEnv, isGitNetworkError, withoutProxyEnv } from './update-proxy'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { spawnUpdaterProcess } from './updater-process'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
@@ -2347,6 +2348,20 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
   })
 }
 
+async function runUpdateCheckGit(args, options: any = {}) {
+  const inheritedEnv = { ...process.env, ...((options.env || {}) as any) }
+  const proxyEnv = buildUpdateCheckEnv(inheritedEnv)
+  const first = await runGit(args, { ...options, env: proxyEnv })
+
+  if (first.code === 0 || !hasProxyEnv(proxyEnv) || !isGitNetworkError(`${first.stdout}\n${first.stderr}`)) {
+    return first
+  }
+
+  // A configured local proxy may be temporarily down while direct access is
+  // still available. Retry without proxy before surfacing a connection error.
+  return runGit(args, { ...options, env: withoutProxyEnv(proxyEnv) })
+}
+
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 
 async function getOriginUrl(updateRoot) {
@@ -2377,7 +2392,7 @@ async function resolveHealedBranch(updateRoot, branch) {
 
   const originUrl = await getOriginUrl(updateRoot)
   const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
+  const probe = await runUpdateCheckGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
 
   if (probe.code !== 2) {
     return branch
@@ -2416,7 +2431,7 @@ async function checkUpdates() {
 
     const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
       git(['rev-parse', 'HEAD']),
-      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
+      runUpdateCheckGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
       git(['status', '--porcelain']),
       git(['rev-parse', '--abbrev-ref', 'HEAD'])
     ])
@@ -2448,7 +2463,7 @@ async function checkUpdates() {
     }
   }
 
-  const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
+  const fetched = await runUpdateCheckGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
 
   if (fetched.code !== 0) {
     return {
