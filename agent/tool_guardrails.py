@@ -79,6 +79,7 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
+_DEFAULT_MAX_FILE_SEARCHES_PER_TURN = 0
 
 # Interactive surfaces plus bounded supervised task loops (subagent stopped by its parent;
 # api_server has a live client) doing real edit -> re-run work keep the warn-only default.
@@ -104,6 +105,7 @@ class LoopCapConfig:
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
+    max_file_searches: int = _DEFAULT_MAX_FILE_SEARCHES_PER_TURN
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "LoopCapConfig":
@@ -328,6 +330,7 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        self._turn_file_search_count = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -541,6 +544,26 @@ class ToolCallGuardrailController:
         """Block once a per-turn cap is reached (BEFORE the call, so the (cap+1)-th is refused), else advance
         the counter and return None. delegate_task control actions spawn nothing and keep working after the cap."""
         spec = _LOOP_CAPS.get(tool_name)
+        if tool_name == "search_files":
+            cap = self.config.loop_caps.max_file_searches
+            if cap and self._turn_file_search_count >= cap:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="loop_file_search_cap",
+                    message=(
+                        f"Blocked search_files: this turn has already made {cap} "
+                        "file searches, the per-turn limit. Use the results already "
+                        "available, narrow the investigation, or ask the user to enter "
+                        "deep diagnostic mode."
+                    ),
+                    tool_name=tool_name,
+                    count=self._turn_file_search_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+            self._turn_file_search_count += 1
+            return None
         if spec is None:
             return None
         cap_field, count_attr, code = spec
