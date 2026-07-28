@@ -10939,6 +10939,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
 
+        # Reactions, read receipts, and delivery-status notices are platform
+        # events, not user turns.  Some adapters synthesize them as text for
+        # hook compatibility; allowing that text to continue creates a full
+        # session and an LLM request for e.g. ``reaction:added:THUMBSUP``.
+        # Keep the adapter/hook event surface intact, but never dispatch these
+        # normalized events into the conversational pipeline.
+        try:
+            from gateway.operational_router import is_non_conversation_event
+            if not is_internal and is_non_conversation_event(event):
+                logger.info(
+                    "gateway.non_conversation_event_ignored platform=%s",
+                    getattr(getattr(source, "platform", None), "value", "unknown"),
+                )
+                return None
+        except Exception:
+            logger.warning("non-conversation event classification failed", exc_info=True)
+
         # Ignored-channel guard runs FIRST — before startup-restore queueing,
         # plugin hooks, auth, and session setup — so a configured ignored
         # channel can never reach pairing/auth/session state (#51899).
@@ -11068,7 +11085,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
-        
+
+        # Fast-path small operational requests before a session is created or
+        # its transcript is loaded.  This keeps fixed local workflows (usage
+        # reports and cron delivery updates) out of the model/tool loop.
+        try:
+            from gateway.operational_router import route_operational_request
+            _event_timestamp = getattr(event, "timestamp", None)
+            if hasattr(_event_timestamp, "timestamp"):
+                _event_timestamp = _event_timestamp.timestamp()
+            elif not isinstance(_event_timestamp, (int, float)):
+                _event_timestamp = None
+            _operational_route = await asyncio.to_thread(
+                route_operational_request,
+                event.text or "",
+                platform=getattr(getattr(source, "platform", None), "value", ""),
+                received_at=_event_timestamp,
+            )
+            if _operational_route.kind in {"handled", "clarification"}:
+                logger.info(
+                    "gateway.operational_route route=%s outcome=%s model_calls=0 tool_calls=0",
+                    _operational_route.route_name,
+                    _operational_route.kind,
+                )
+                return _operational_route.text
+            if _operational_route.kind == "deep_mode":
+                # /deep is intentionally only an explicit escape hatch.  It
+                # still uses the existing, fully-authorized agent path; the
+                # marker provides observability without changing old sessions.
+                event.metadata["operational_deep_mode"] = True
+                if _operational_route.text:
+                    event.text = _operational_route.text
+                logger.info("gateway.operational_route route=deep_mode outcome=agent")
+        except Exception:
+            # A fast path must never make normal conversation unavailable.
+            logger.warning("gateway operational route failed; using agent path", exc_info=True)
+
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
@@ -14166,6 +14218,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                operational_deep_mode=bool(
+                    (getattr(event, "metadata", None) or {}).get("operational_deep_mode")
+                ),
             )
 
             # Stop persistent typing indicator now that the agent is done.
@@ -20229,6 +20284,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        operational_deep_mode: bool = False,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -20247,6 +20303,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                operational_deep_mode=operational_deep_mode,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -20258,6 +20315,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
+                operational_deep_mode=operational_deep_mode,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -20379,6 +20437,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
+        operational_deep_mode: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -21491,6 +21550,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 combined_ephemeral = (combined_ephemeral + "\n\n" + cfg_channel_prompt).strip()
 
             max_iterations = _current_max_iterations()
+            # Messaging turns have a deliberately finite safety ceiling. A
+            # recognized operational request never reaches this code; this is
+            # the fallback for free-form requests that enter the general agent.
+            # Explicit /deep and Chinese deep-diagnostic requests retain a
+            # larger budget for real investigations.
+            _operational_cfg = user_config.get("gateway", {}).get("operational_guardrails", {})
+            if not isinstance(_operational_cfg, dict):
+                _operational_cfg = {}
+            _budget_key = "deep_max_api_calls" if operational_deep_mode else "normal_max_api_calls"
+            _budget_default = 32 if operational_deep_mode else 12
+            try:
+                _gateway_budget = int(_operational_cfg.get(_budget_key, _budget_default))
+            except (TypeError, ValueError):
+                _gateway_budget = _budget_default
+            if _gateway_budget > 0 and source.platform != Platform.LOCAL:
+                max_iterations = min(max_iterations, _gateway_budget)
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -21895,6 +21970,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
+
+            # Tool output has existing global context budgets. Add a gateway
+            # normal-mode cap specifically for repeated filesystem discovery;
+            # deep mode deliberately disables this cap. This mutates only the
+            # controller policy for the current turn, never the tool schema or
+            # cached prompt prefix.
+            try:
+                _guardrails = agent._tool_guardrails
+                _normal_file_search_cap = int(
+                    _operational_cfg.get("normal_max_file_searches", 8)
+                )
+                _file_search_cap = 0 if operational_deep_mode else max(0, _normal_file_search_cap)
+                _guardrails.config = dataclasses.replace(
+                    _guardrails.config,
+                    loop_caps=dataclasses.replace(
+                        _guardrails.config.loop_caps,
+                        max_file_searches=_file_search_cap,
+                    ),
+                )
+            except Exception:
+                logger.debug("Failed to apply gateway operational guardrails", exc_info=True)
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.

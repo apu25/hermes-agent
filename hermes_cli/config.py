@@ -1432,6 +1432,7 @@ DEFAULT_CONFIG = {
         "loop_caps": {
             "max_web_searches": 50,   # max web_search calls per turn (0 = unlimited)
             "max_subagents": 50,      # max subagents spawned per turn (0 = unlimited)
+            "max_file_searches": 0,   # gateway normal mode overrides this; 0 = unlimited
         },
     },
 
@@ -3147,6 +3148,16 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Deterministic operational routes avoid model/tool calls entirely for
+        # token reports and narrow cron delivery changes.  These limits are a
+        # final safety net for ordinary messaging turns that still need the
+        # general agent. `/deep` and explicit Chinese deep-diagnostic requests
+        # get the higher ceiling.
+        "operational_guardrails": {
+            "normal_max_api_calls": 12,
+            "deep_max_api_calls": 32,
+            "normal_max_file_searches": 8,
+        },
         # Durable delivery-obligation ledger: final agent responses are
         # recorded in state.db around the platform send, and a gateway that
         # died between finalize and platform ACK redelivers the stored
