@@ -3406,6 +3406,29 @@ class GatewayRunner(
     _platform_lock_takeover_on_start: bool = False
     _reconnect_watcher_task: Optional["asyncio.Task"] = None
 
+    # Newer control-message paths use these non-materialising SessionState
+    # reads.  Keep this auxiliary map alongside the legacy dictionaries used
+    # by the operational-router branch.
+    def _sessions_map(self) -> Dict[str, "SessionState"]:
+        sessions = self.__dict__.get("_sessions")
+        if sessions is None:
+            sessions = {}
+            self.__dict__["_sessions"] = sessions
+        return sessions
+
+    def _session_state(self, session_key: str) -> "SessionState":
+        sessions = self._sessions_map()
+        state = sessions.get(session_key)
+        if state is None:
+            state = SessionState()
+            sessions[session_key] = state
+        return state
+
+    def _peek_session_state(self, session_key: str) -> Optional["SessionState"]:
+        """Return existing state without creating a session entry."""
+        sessions = self.__dict__.get("_sessions")
+        return sessions.get(session_key) if sessions else None
+
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
         # With multiplex_profiles on, load under the default profile secret scope so bot tokens in its
