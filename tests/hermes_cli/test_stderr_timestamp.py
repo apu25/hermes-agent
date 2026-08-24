@@ -1,6 +1,7 @@
 """Tests for hermes_cli.stderr_timestamp."""
 
 import os
+import pathlib
 import re
 import signal
 import subprocess
@@ -9,6 +10,7 @@ import time
 
 import pytest
 
+from hermes_cli import gateway
 from gateway.restart import (
     EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
@@ -69,6 +71,34 @@ def test_prepare_keeps_existing_external_supervisor_flag():
     assert (
         stderr_timestamp._prepare_child_command(already, _LAUNCHD_ENV) == already
     )
+
+
+def test_timestamped_stderr_gateway_command_drops_replace_for_launchd_supervision(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        gateway, "_gateway_run_command", lambda: [*_STALE_GATEWAY_ARGV]
+    )
+    command = gateway._timestamped_stderr_gateway_command(
+        pathlib.Path("/tmp/gateway.error.log"), external_supervisor=True
+    )
+
+    assert command[:5] == [
+        gateway.get_python_path(),
+        "-m",
+        "hermes_cli.stderr_timestamp",
+        "--error-log",
+        "/tmp/gateway.error.log",
+    ]
+    assert command[-6:] == [
+        _STALE_GATEWAY_ARGV[0],
+        "-m",
+        "hermes_cli.main",
+        "gateway",
+        "run",
+        "--external-supervisor",
+    ]
+    assert "--replace" not in command
 
 
 def test_prepare_skips_arbitrary_command_under_launchd():
