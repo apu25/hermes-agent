@@ -4723,6 +4723,10 @@ def _timestamped_stderr_gateway_command(
     """
     inner = _gateway_run_command()
     if external_supervisor and "--external-supervisor" not in inner:
+        # launchd's stderr timestamp wrapper is the direct parent of this
+        # process.  ``--replace`` can mistake that wrapper for an old gateway
+        # via a stale PID record and terminate its own parent during startup.
+        inner = [part for part in inner if part != "--replace"]
         inner = [*inner, "--external-supervisor"]
     return [
         get_python_path(),
