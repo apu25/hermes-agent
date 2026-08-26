@@ -355,8 +355,7 @@ caption
             },
         ]
         paths = _collect_history_media_paths(history)
-        assert "/tmp/gen/cat.png" in paths  # JSON-payload path (the bug)
-        assert "/tmp/voice/note.ogg" in paths  # MEDIA: text path (already worked)
+        assert paths == {"/tmp/gen/cat.png", "/tmp/voice/note.ogg"}
 
     def test_non_streaming_dedup_excludes_current_turn_tool_output(self):
         from gateway.platforms.base import BasePlatformAdapter
