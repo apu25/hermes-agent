@@ -11,6 +11,27 @@ import sqlite3
 import sys
 import threading
 
+
+def _checkout_git_dir() -> Path | None:
+    """Return this checkout's Git directory when it is a linked worktree.
+
+    Git keeps a linked worktree's administrative directory under the primary
+    checkout's ``.git/worktrees`` directory.  That is source-control metadata
+    for this checkout, not Hermes user state, even when the primary checkout
+    happens to live inside the default Hermes home.
+    """
+    git_file = Path(__file__).resolve().parent.parent / ".git"
+    try:
+        first_line = git_file.read_text(encoding="utf-8").splitlines()[0]
+    except (FileNotFoundError, IndexError, OSError, UnicodeError):
+        return None
+    prefix = "gitdir: "
+    if not first_line.startswith(prefix):
+        return None
+    return Path(first_line[len(prefix):]).resolve()
+
+
+_CHECKOUT_GIT_DIR = _checkout_git_dir()
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
@@ -24,6 +45,7 @@ _INTERPRETER_PREFIXES = tuple({
     # checkout's own .venv is not Hermes state; without this every run from a default install
     # trips on its first traceback.
     Path(__file__).resolve().parent.parent,
+    *(() if _CHECKOUT_GIT_DIR is None else (_CHECKOUT_GIT_DIR,)),
 })
 # The same prefixes as plain strings for the check() fast path. PurePath comparison folds case on
 # Windows; ``os.path.normcase`` (identity on POSIX) reproduces that for string compares. Prefixes
