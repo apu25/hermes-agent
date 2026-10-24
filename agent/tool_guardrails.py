@@ -80,6 +80,7 @@ _THRESHOLD_SOURCES: dict[str, tuple[str, str]] = {
 # Per-turn caps on runaway-prone tools (counters reset in reset_for_turn).
 _DEFAULT_MAX_WEB_SEARCHES_PER_TURN = 50
 _DEFAULT_MAX_SUBAGENTS_PER_TURN = 50
+_DEFAULT_MAX_FILE_SEARCHES_PER_TURN = 0
 
 # Interactive surfaces plus bounded supervised task loops (subagent stopped by its parent;
 # api_server has a live client) doing real edit -> re-run work keep the warn-only default.
@@ -105,6 +106,7 @@ class LoopCapConfig:
 
     max_web_searches: int = _DEFAULT_MAX_WEB_SEARCHES_PER_TURN
     max_subagents: int = _DEFAULT_MAX_SUBAGENTS_PER_TURN
+    max_file_searches: int = _DEFAULT_MAX_FILE_SEARCHES_PER_TURN
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> LoopCapConfig:
@@ -278,6 +280,10 @@ _DECISION_MESSAGES: dict[str, str] = {
         "arguments and identical results has run {count} times. Repeating the batch unchanged is not "
         "progress; use the results already provided or change strategy."
     ),
+    "loop_file_search_cap": (
+        "Blocked search_files: this turn has already made {cap} file searches. "
+        "Use the results already available or narrow the investigation."
+    ),
     "loop_web_search_cap": (
         "Blocked web_search: this turn has already made {cap} web searches, the per-turn limit. "
         "This looks like a runaway search loop. Work with the results you already have and give the user your answer."
@@ -304,6 +310,7 @@ _IDENTICAL_CYCLE_NOTICE = (
 
 # tool -> (LoopCapConfig field, controller counter attribute, decision code)
 _LOOP_CAPS: dict[str, tuple[str, str, str]] = {
+    "search_files": ("max_file_searches", "_turn_file_search_count", "loop_file_search_cap"),
     "web_search": ("max_web_searches", "_turn_web_search_count", "loop_web_search_cap"),
     "delegate_task": ("max_subagents", "_turn_subagent_count", "loop_subagent_cap"),
 }
@@ -342,6 +349,7 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        self._turn_file_search_count = 0
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -566,7 +574,7 @@ class ToolCallGuardrailController:
             return None
         cap_field, count_attr, code = spec
         cap, count = getattr(self.config.loop_caps, cap_field), getattr(self, count_attr)
-        increment = 1 if tool_name == "web_search" else (_subagent_spawn_count(args) if cap else 0)
+        increment = 1 if tool_name in {"web_search", "search_files"} else (_subagent_spawn_count(args) if cap else 0)
         if increment and cap and count >= cap:
             return self._decide("block", code, tool_name, count, signature, cap=cap)
         setattr(self, count_attr, count + increment)
