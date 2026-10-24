@@ -1236,6 +1236,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if room is not None:
             max_iterations = room.max_iterations
             ctx.enabled_toolsets = list(room.enabled_toolsets)
+        from gateway.operational_limits import messaging_iteration_limit
+        max_iterations = messaging_iteration_limit(ctx.user_config, ctx.source.platform, max_iterations, ctx.message)
         try:
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
@@ -1296,6 +1298,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if pending_fallback_notice:
             # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
             agent._pending_fallback_notice = pending_fallback_notice
+        from gateway.operational_limits import apply_file_search_limit
+        apply_file_search_limit(agent, ctx.user_config, ctx.source.platform, ctx.message)
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None
