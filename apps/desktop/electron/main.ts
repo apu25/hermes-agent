@@ -11623,18 +11623,43 @@ function reapInstallRootedStragglers(excludePids: number[]): void {
   }
 }
 
+// Lifecycle-only diagnostics: never log command arguments, URLs, or conversation data.
+function traceQuitTask<T>(name: string, run: () => Promise<T>): Promise<T> {
+  const started = Date.now()
+  rememberLog(`[quit-diag] ${name} start pid=${process.pid}`)
+  const timer = setInterval(() => rememberLog(`[quit-diag] ${name} pending elapsed_ms=${Date.now() - started}`), 5000)
+  timer.unref()
+  let result: Promise<T>
+  try {
+    result = Promise.resolve(run())
+  } catch (error) {
+    clearInterval(timer)
+    rememberLog(`[quit-diag] ${name} threw elapsed_ms=${Date.now() - started}`)
+    throw error
+  }
+  return result.then(value => {
+    clearInterval(timer)
+    rememberLog(`[quit-diag] ${name} complete elapsed_ms=${Date.now() - started}`)
+    return value
+  }, error => {
+    clearInterval(timer)
+    rememberLog(`[quit-diag] ${name} rejected elapsed_ms=${Date.now() - started}`)
+    throw error
+  })
+}
+
 // Closing Desktop never stops the detached gateway: only processes this app
 // still owns are torn down, and the straggler reap protects every live Hermes
 // runtime tree (package-process-reap.ts).
 const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void> => {
   const ownedChildren = IS_WINDOWS ? collectOwnedBackendChildren() : []
-  const localShutdown = localBackendLifecycle.shutdown()
+  const localShutdown = traceQuitTask('backend.local', () => localBackendLifecycle.shutdown())
   const primary = backendConnectionState.getProcess()
-  const primaryStop = teardownPrimaryBackendAndWait(backendTeardownOptions('quit'))
-  const pooledStops = stopAllPoolBackends()
+  const primaryStop = traceQuitTask('backend.primary', () => teardownPrimaryBackendAndWait(backendTeardownOptions('quit')))
+  const pooledStops = traceQuitTask('backend.pools', () => stopAllPoolBackends())
 
   // Bounded: a backend that ignores SIGTERM must not wedge app quit (main's 7 s teardown budget).
-  await waitForTeardown([localShutdown, primaryStop, pooledStops], 7_000)
+  await traceQuitTask('backend.wait-bounded', () => waitForTeardown([localShutdown, primaryStop, pooledStops], 7_000))
 
   reapInstallRootedStragglers(Number.isInteger(primary?.pid) ? [primary.pid] : [])
 
@@ -16678,6 +16703,7 @@ app.on('before-quit', () => {
 // Close the pooled keep-alive sockets on quit so lingering connections can't
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
+  rememberLog(`[quit-diag] will-quit pid=${process.pid}`)
   closeGatewayTicketBridges()
   killTimedGitChildren()
   sshIsolatedKeepalives.stopAll()
@@ -16687,6 +16713,7 @@ app.on('will-quit', () => {
 })
 
 app.on('quit', () => {
+  rememberLog(`[quit-diag] quit pid=${process.pid}`)
   quitFinalization.cancel()
 })
 
@@ -18105,6 +18132,7 @@ function quitIfNoSurfaceLeft() {
 }
 
 app.on('before-quit', event => {
+  rememberLog(`[quit-diag] before-quit pid=${process.pid} managed_updates=${managedConnectionUpdates.size} managed_recoveries=${managedConnectionRecoveries.size} ssh_connections=${sshConnections.size}`)
   // Runs ahead of every teardown below, so "Keep Running" leaves the app
   // exactly as it was: a held quit is not a quit in progress, and the
   // overlay-suppression latch must not leak into the next close (#130810).
@@ -18140,10 +18168,10 @@ app.on('before-quit', event => {
     event.preventDefault()
 
     if (!managedUpdateQuitWait) {
-      managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
+      managedUpdateQuitWait = traceQuitTask('managed-update', () => waitForManagedUpdateOperations(() => [
         ...managedConnectionUpdates.values(),
         ...managedConnectionRecoveries.values()
-      ]).finally(() => {
+      ])).finally(() => {
         managedUpdateQuitWaitDone = true
         app.quit()
       })
@@ -18168,13 +18196,14 @@ app.on('before-quit', event => {
     sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0 || sshTeardowns.hasPending()
 
   const teardownTasks: QuitTeardownTask[] = [
-    { run: (): Promise<void> => backendShutdown.run(), waitForCompletion: backendNeedsWait }
+    { run: (): Promise<void> => traceQuitTask('backend.shutdown', () => backendShutdown.run()), waitForCompletion: backendNeedsWait }
   ]
 
   if (sshNeedsWait) {
-    teardownTasks.push({ run: teardownSshForQuit, waitForCompletion: true })
+    teardownTasks.push({ run: () => traceQuitTask('ssh.shutdown', teardownSshForQuit), waitForCompletion: true })
   }
 
+  rememberLog(`[quit-diag] tasks backend_wait=${backendNeedsWait} ssh_wait=${sshNeedsWait}`)
   if (quitTeardown.begin(teardownTasks)) {
     event.preventDefault()
   }

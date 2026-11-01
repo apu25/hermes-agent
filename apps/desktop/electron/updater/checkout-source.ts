@@ -81,7 +81,7 @@ export async function sourceUpdateEnvironment(
 
 /** Python owns config identity and publication checks; this bridge only transports them. */
 export async function readSourceUpdate(probe: SourceUpdateProbe): Promise<SourceUpdate | null> {
-  const env = buildUpdateCheckEnv(sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome))
+  const env = buildUpdateCheckEnv(await sourceUpdateEnvironment(probe.updateRoot, probe.hermesHome))
   try {
     const result = await readSourceUpdateWithEnv(probe, env)
     if (!result?.error || !hasProxyEnv(env) || !isGitNetworkError(result.message || '')) {
